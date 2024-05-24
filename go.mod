@@ -1,4 +1,4 @@
-module notify-tool
+module github.com/SWITCHSCIENCE/notify-tool
 
 go 1.22.3
 
