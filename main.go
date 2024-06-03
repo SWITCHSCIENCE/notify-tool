@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,13 +110,13 @@ func Subscribe(ctx context.Context) {
 	log.Println(line)
 	var subs *webpush.Subscription
 	decoder := json.NewDecoder(strings.NewReader(line))
-	decoder.DisallowUnknownFields()
+	//decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&subs); err != nil {
 		log.Fatal(err)
 	}
 	dir := filepath.Dir(envFileName)
 	os.MkdirAll(filepath.Join(dir, "subscriptions"), 0o755)
-	fp, err := os.Create(filepath.Join(configDir, "subscriptions", subs.Keys.P256dh+".json"))
+	fp, err := os.Create(filepath.Join(dir, "subscriptions", subs.Keys.P256dh+".json"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -128,21 +129,14 @@ func Subscribe(ctx context.Context) {
 }
 
 func List(ctx context.Context) {
-	dir := os.DirFS(filepath.Join(filepath.Dir(envFileName), "subscriptions"))
-	if err := fs.WalkDir(dir, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".json") {
-			return nil
-		}
-		log.Println(path)
-		return nil
-	}); err != nil {
+	dir := filepath.Join(filepath.Dir(envFileName), "subscriptions")
+	subs := os.DirFS(dir)
+	files, err := fs.Glob(subs, "*.json")
+	if err != nil {
 		log.Fatal(err)
+	}
+	for _, f := range files {
+		log.Println(filepath.Join(dir, f))
 	}
 }
 
@@ -154,27 +148,24 @@ func Push(ctx context.Context) {
 	if err := env.Parse(&config); err != nil {
 		log.Fatal(err)
 	}
-	dir := os.DirFS(filepath.Join(filepath.Dir(envFileName), "subscriptions"))
-	if err := fs.WalkDir(dir, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".json") {
-			return nil
-		}
-		fpath := filepath.Join("subscriptions", path)
+	dir := filepath.Join(filepath.Dir(envFileName), "subscriptions")
+	subs := os.DirFS(dir)
+	files, err := fs.Glob(subs, "*.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, path := range files {
+		fpath := filepath.Join(dir, path)
 		log.Println("load subscription:", fpath)
-		fp, err := os.Open(fpath)
+		subs, err := os.ReadFile(fpath)
 		if err != nil {
-			return err
+			log.Print(err)
+			continue
 		}
-		defer fp.Close()
 		var s *webpush.Subscription
-		if err := json.NewDecoder(fp).Decode(&s); err != nil {
-			return err
+		if err := json.Unmarshal(subs, &s); err != nil {
+			log.Print(err)
+			continue
 		}
 		notify := &Notify{
 			Title: title,
@@ -183,23 +174,34 @@ func Push(ctx context.Context) {
 		if data != "" {
 			notify.Data = []byte(data)
 		}
-		b, err := json.Marshal(notify)
+		bin, err := json.Marshal(notify)
 		if err != nil {
-			return err
+			log.Print(err)
+			continue
 		}
-		resp, err := webpush.SendNotificationWithContext(ctx, b, s, &webpush.Options{
+		resp, err := webpush.SendNotificationWithContext(ctx, bin, s, &webpush.Options{
 			Subscriber:      config.Subscriber,
 			VAPIDPublicKey:  config.VAPIDPublicKey,
 			VAPIDPrivateKey: config.VAPIDPrivateKey,
 			TTL:             30,
 		})
 		if err != nil {
-			return err
+			log.Print(err)
+			continue
 		}
-		log.Println(resp)
-		return nil
-	}); err != nil {
-		log.Println(err)
+		log.Println(resp.StatusCode, resp.Status)
+		if resp.StatusCode != http.StatusCreated {
+			d := filepath.Dir(fpath)
+			os.Mkdir(filepath.Join(d, "revoked"), 0o755)
+			n := filepath.Base(fpath)
+			dst := filepath.Join(d, "revoked", n)
+			log.Println(fpath, "->", dst)
+			if err := os.Rename(fpath, dst); err != nil {
+				log.Print(err)
+			}
+			log.Print(fmt.Errorf("status code: %d", resp.StatusCode))
+			continue
+		}
 	}
 }
 
@@ -228,6 +230,12 @@ func main() {
 		Subscribe(ctx)
 		os.Exit(0)
 	case listFlags.Name():
+		listFlags.StringVar(&envFileName, "env", envFileName, "load .env file")
+		if err := listFlags.Parse(flag.Args()[1:]); err != nil {
+			log.Println(err)
+			listFlags.Usage()
+			os.Exit(1)
+		}
 		List(ctx)
 		os.Exit(0)
 	case pushFlags.Name():
