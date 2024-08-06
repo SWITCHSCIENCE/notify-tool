@@ -88,7 +88,7 @@ func Subscribe(ctx context.Context) {
 	if err := env.Parse(&config); err != nil {
 		log.Fatal(err)
 	}
-	url := fmt.Sprintf("https://pages.switch-science.com/notify-app/?pubKey=%s", config.VAPIDPublicKey)
+	url := fmt.Sprintf("https://switchscience.github.io/notify-app/?pubKey=%s", config.VAPIDPublicKey)
 	qrterminal.GenerateWithConfig(url, qrterminal.Config{
 		Level:     qrterminal.L,
 		Writer:    os.Stdout,
